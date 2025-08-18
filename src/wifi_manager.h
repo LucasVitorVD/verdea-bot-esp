@@ -78,7 +78,50 @@ void handleWiFiConnection()
       Serial.println("📶 WiFi desconectado - tentando reconectar...");
       WiFi.reconnect();
     }
-    
+
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS)
+    {
+      reconnectAttempts = 0;
+      
+      Serial.println("🚨 Máximo de tentativas atingido - entrando em modo AP para reconfiguração");
+
+      wifiManager.setConfigPortalTimeout(WIFI_CONFIG_TIMEOUT);
+
+      bool configResult = wifiManager.startConfigPortal(WIFI_AP_NAME, WIFI_AP_PASSWORD);
+
+      if (configResult)
+      {
+        Serial.println("✅ Configuração WiFi concluída com sucesso!");
+      }
+      else
+      {
+        Serial.println("⏰ Timeout do modo AP expirado - tentando reconectar...");
+      }
+
+      // Após sair do modo AP, tenta conectar normalmente
+      if (WiFi.status() != WL_CONNECTED)
+      {
+        Serial.println("🔄 Tentando conectar ao WiFi após modo AP...");
+        if (!wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD))
+        {
+          Serial.println("❌ Falha na conexão WiFi após modo AP");
+          // Entrar em modo offline só após esse segundo fracasso
+          offlineMode = true;
+          isOnlineMode = false;
+          reconnectAttempts = 0;
+          Serial.println("🌱 Entrando em modo OFFLINE");
+        }
+        else
+        {
+          Serial.println("✅ Conectado ao WiFi após modo AP");
+          offlineMode = false;
+          isOnlineMode = true;
+          reconnectAttempts = 0;
+        }
+      }
+
+      isReconnecting = false; // Reset flag
+    }
   }
   else // WiFi conectado
   {
@@ -88,12 +131,12 @@ void handleWiFiConnection()
       isReconnecting = false;
     }
 
-    if (offlineMode && reconnectAttempts >= MAX_RECONNECT_ATTEMPTS)
+    if (offlineMode)
     {
-      Serial.println("🔄 WiFi reconectado - tentando voltar ao modo online...");
+      offlineMode = false;
       reconnectAttempts = 0;
-      extern void tryReconnectAPI();
-      tryReconnectAPI();
+      isOnlineMode = true;
+      Serial.println("🔄 WiFi reconectado - Saiu do modo OFFLINE");
     }
   }
 }

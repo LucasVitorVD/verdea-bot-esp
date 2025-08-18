@@ -11,6 +11,7 @@
 extern String lastSentMac;
 extern bool alreadyRegistered;
 extern unsigned long lastHeartbeat;
+String deviceId = "";
 
 // Declarações das funções
 void initAPI();
@@ -22,31 +23,38 @@ bool isAPIConnected();
 void switchToOnlineMode();
 
 // Implementações
-void initAPI() {
+void initAPI()
+{
   lastSentMac = "";
   alreadyRegistered = false;
   lastHeartbeat = millis();
-  
+
   // Tentar registrar dispositivo
   sendDeviceRegistration();
 }
 
-void handleAPIConnection() {
-  if (!getOnlineMode()) return;
+void handleAPIConnection()
+{
+  if (!getOnlineMode())
+    return;
 
   // Enviar heartbeat a cada intervalo definido
-  if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL) {
+  if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL)
+  {
     sendHeartbeat();
   }
 
   // Verificar se precisa reregistrar
-  if (!alreadyRegistered && !getOfflineMode()) {
+  if (!alreadyRegistered && !getOfflineMode())
+  {
     sendDeviceRegistration();
   }
 }
 
-void sendDeviceRegistration() {
-  if (WiFi.status() != WL_CONNECTED) {
+void sendDeviceRegistration()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
     Serial.println("❌ WiFi não conectado - não é possível registrar dispositivo");
     return;
   }
@@ -55,10 +63,12 @@ void sendDeviceRegistration() {
   WiFiClient client;
 
   http.setTimeout(HTTP_TIMEOUT);
-  http.begin(client, String(API_URL));
+  http.begin(client, String(API_URL) + "/add");
   http.addHeader("Content-Type", "application/json");
 
   String mac = WiFi.macAddress();
+  String ip = WiFi.localIP().toString();
+
   Serial.print("📡 Tentando registrar dispositivo - MAC: ");
   Serial.println(mac);
 
@@ -67,11 +77,18 @@ void sendDeviceRegistration() {
   macSuffix = macSuffix.substring(6);
   String deviceName = "irrigacao-verdea-" + macSuffix;
 
-  String payload = "{\"name\": \"" + deviceName + "\", \"macAddress\": \"" + mac + "\", \"status\": \"ONLINE\", \"type\": \"irrigation\"}";
+  DynamicJsonDocument doc(256);
+  doc["name"] = deviceName;
+  doc["macAddress"] = mac;
+  doc["currentIp"] = ip;
+
+  String payload;
+  serializeJson(doc, payload);
 
   int httpCode = http.POST(payload);
 
-  if (httpCode >= 200 && httpCode < 300) {
+  if (httpCode >= 200 && httpCode < 300)
+  {
     Serial.println("✅ Dispositivo registrado na API!");
     Serial.print("Código HTTP: ");
     Serial.println(httpCode);
@@ -81,11 +98,22 @@ void sendDeviceRegistration() {
     switchToOnlineMode();
 
     Serial.println("🌐 MODO ONLINE ativado");
-  } else if (httpCode == 409 || httpCode == 422) {
+
+    // Pegar o deviceId retornado no JSON
+    DynamicJsonDocument doc(256);
+    String resp = http.getString();
+    deserializeJson(doc, resp);
+    deviceId = doc["id"] | "";
+    Serial.println("🆔 Device ID: " + deviceId);
+  }
+  else if (httpCode == 409 || httpCode == 422)
+  {
     Serial.println("⚠️ Dispositivo já registrado");
     alreadyRegistered = true;
     switchToOnlineMode();
-  } else {
+  }
+  else
+  {
     Serial.print("❌ Erro na requisição HTTP: ");
     Serial.println(httpCode);
     Serial.println("Resposta: " + http.getString());
@@ -97,7 +125,40 @@ void sendDeviceRegistration() {
   http.end();
 }
 
-void sendHeartbeat() {
+void updateDeviceIp()
+{
+  if (WiFi.status() != WL_CONNECTED || deviceId == "")
+    return;
+
+  HTTPClient http;
+  WiFiClient client;
+
+  String patchUrl = String(API_URL) + "/update/" + deviceId;
+  http.begin(client, patchUrl);
+  http.addHeader("Content-Type", "application/json");
+
+  String ip = WiFi.localIP().toString();
+  String payload = "{";
+  payload += "\"currentIp\":\"" + ip + "\"";
+  payload += "}";
+
+  int httpCode = http.sendRequest("PATCH", payload);
+
+  if (httpCode >= 200 && httpCode < 300)
+  {
+    Serial.println("✅ IP atualizado no backend: " + ip);
+  }
+  else
+  {
+    Serial.println("❌ Falha ao atualizar IP. HTTP: " + String(httpCode));
+    Serial.println("Resposta: " + http.getString());
+  }
+
+  http.end();
+}
+
+void sendHeartbeat()
+{
   /* if (WiFi.status() != WL_CONNECTED || !getOnlineMode()) return;
 
   HTTPClient http;
@@ -117,7 +178,7 @@ void sendHeartbeat() {
     lastHeartbeat = millis();
   } else {
     Serial.println("❌ Falha no heartbeat - HTTP: " + String(httpCode));
-    
+
     // Se falhar heartbeat, verificar se deve entrar em modo offline
     if (millis() - lastHeartbeat > HEARTBEAT_TIMEOUT) {
       Serial.println("🚨 Sem comunicação com servidor - ativando modo offline");
@@ -128,17 +189,20 @@ void sendHeartbeat() {
   http.end(); */
 }
 
-void tryReconnectAPI() {
+void tryReconnectAPI()
+{
   reconnectAttempts = 0;
   offlineMode = false;
   sendDeviceRegistration();
 }
 
-bool isAPIConnected() {
+bool isAPIConnected()
+{
   return alreadyRegistered && getOnlineMode();
 }
 
-void switchToOnlineMode() {
+void switchToOnlineMode()
+{
   offlineMode = false;
   isOnlineMode = true;
   reconnectAttempts = 0;
