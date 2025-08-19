@@ -10,6 +10,7 @@
 #include "api_manager.h"
 #include "irrigation_controller.h"
 #include "web_server.h"
+#include "mqtt_manager.h"
 
 // Instâncias globais
 ESP8266WebServer server(80);
@@ -32,6 +33,9 @@ void setup()
   if (WiFi.status() == WL_CONNECTED)
   {
     initAPI();
+
+    // Inicializar MQTT
+    initMQTT();
   }
 
   // Inicializar sistema de irrigação
@@ -52,6 +56,9 @@ void loop()
 
   // Gerenciar conectividade WiFi
   handleWiFiConnection();
+
+  // Processar MQTT
+  handleMQTT();
 
   // Gerenciar comunicação com API
   handleAPIConnection();
