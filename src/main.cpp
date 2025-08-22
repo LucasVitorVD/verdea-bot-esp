@@ -7,7 +7,6 @@
 // Incluir os módulos
 #include "config.h"
 #include "wifi_manager.h"
-#include "api_manager.h"
 #include "irrigation_controller.h"
 #include "web_server.h"
 #include "mqtt_manager.h"
@@ -32,7 +31,7 @@ void setup()
   // Inicializar API se conectado
   if (WiFi.status() == WL_CONNECTED)
   {
-    initAPI();
+    // initAPI();
 
     // Inicializar MQTT
     initMQTT();
@@ -59,9 +58,6 @@ void loop()
 
   // Processar MQTT
   handleMQTT();
-
-  // Gerenciar comunicação com API
-  handleAPIConnection();
 
   // Controlar sistema de irrigação
   handleIrrigation();

@@ -5,7 +5,6 @@
 #include <ArduinoJson.h>
 #include "config.h"
 #include "wifi_manager.h"
-#include "api_manager.h"
 #include "irrigation_controller.h"
 #include "auth_utils.h"
 
@@ -78,11 +77,7 @@ void handleReconnect()
   server.send(200, "application/json", responseStr);
 
   // Tentar reconectar
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    tryReconnectAPI();
-  }
-  else
+  if (WiFi.status() != WL_CONNECTED)
   {
     Serial.println("📶 WiFi desconectado - tentando reconectar...");
   }

@@ -1,6 +1,7 @@
 #ifndef MQTT_MANAGER_H
 #define MQTT_MANAGER_H
 
+#include <ArduinoJson.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
@@ -14,9 +15,9 @@ const int mqtt_port = 8883;
 const char *mqtt_username = "verdea";
 const char *mqtt_password = "Verdea14072025";
 
-// Tópicos
-const char *topic_status = "verdea/status";
+// Tópicos base
 const char *topic_commands = "verdea/commands";
+const char *topic_register = "verdea/device/register";
 
 // Instâncias globais para o cliente MQTT
 WiFiClientSecure espClient;
@@ -26,8 +27,40 @@ PubSubClient mqttClient(espClient);
 void initMQTT();
 void handleMQTT();
 void reconnectMQTT();
-void publishStatus(String payload);
+void publishStatus(String status);
 void mqttCallback(char *topic, byte *payload, unsigned int length);
+void publishRegistrationMessage();
+String getDeviceMacClean();
+String getDeviceTopicStatus();
+String getDeviceTopicCommands();
+String buildStatusPayload(String status);
+
+String getDeviceMacClean()
+{
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  return mac;
+}
+
+String getDeviceTopicStatus()
+{
+  return "verdea/status/" + getDeviceMacClean();
+}
+
+String getDeviceTopicCommands()
+{
+  return "verdea/commands/" + getDeviceMacClean();
+}
+
+String buildStatusPayload(String status) {
+  DynamicJsonDocument doc(128);
+  doc["macAddress"] = WiFi.macAddress();
+  doc["status"] = status;
+  
+  String payload;
+  serializeJson(doc, payload);
+  return payload;
+}
 
 void initMQTT()
 {
@@ -54,8 +87,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 
   Serial.println(msg);
 
-  // Lógica para comandos de irrigação
-  if (String(topic) == topic_commands)
+  // Lógica para comandos de irrigação (tópicos gerais ou específicos do dispositivo)
+  String deviceTopicCommands = getDeviceTopicCommands();
+
+  if (String(topic) == topic_commands || String(topic) == deviceTopicCommands)
   {
     if (msg == "ON")
     {
@@ -75,32 +110,6 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       ESP.restart(); // Reinicia o dispositivo
     }
   }
-
-  // Lógica para comandos específicos do dispositivo
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  String deviceTopicCommands = "verdea/commands/" + mac;
-
-  if (String(topic) == deviceTopicCommands)
-  {
-    if (msg == "ON")
-    {
-      controlPump(true);
-      Serial.println("💧 Comando de LIGAR bomba recebido (tópico específico).");
-    }
-    else if (msg == "OFF")
-    {
-      controlPump(false);
-      Serial.println("💧 Comando de DESLIGAR bomba recebido (tópico específico).");
-    }
-    else if (msg == "RESET_WIFI")
-    {
-      Serial.println("🚨 Comando de RESET_WIFI recebido via MQTT (tópico específico)!");
-      delay(1000);
-      resetWiFiSettings();
-      ESP.restart();
-    }
-  }
 }
 
 void reconnectMQTT()
@@ -116,28 +125,25 @@ void reconnectMQTT()
     Serial.print(maxAttempts);
     Serial.print(" - Conectando ao broker MQTT...");
 
-    String clientId = "NodeMCU-" + WiFi.macAddress();
-    clientId.replace(":", "");
+    String clientId = "irrigacao-verdea-" + getDeviceMacClean();
+    String willTopic = getDeviceTopicStatus();
+    String willPayload = buildStatusPayload("offline"); // <-- CORREÇÃO: Usar função para criar JSON
 
-    if (mqttClient.connect(clientId.c_str(), mqtt_username, mqtt_password))
+    if (mqttClient.connect(clientId.c_str(), mqtt_username, mqtt_password, willTopic.c_str(), 1, true, willPayload.c_str()))
     {
       Serial.println("✅ Conectado!");
 
-      // Tópicos de comando dinâmicos e estáticos
-      String mac = WiFi.macAddress();
-      mac.replace(":", "");
-      String deviceTopicCommands = "verdea/commands/" + mac;
-
-      // Inscrição em tópicos
-      mqttClient.subscribe(deviceTopicCommands.c_str());
+      // Inscrever nos tópicos de comando
+      mqttClient.subscribe(getDeviceTopicCommands().c_str());
       mqttClient.subscribe(topic_commands);
 
       Serial.println("🔗 Inscrito em tópicos de comando.");
 
-      // Publicar status de conexão inicial
-      String deviceName = "irrigacao-verdea-" + mac.substring(6);
-      String statusMsg = "{\"device\":\"" + deviceName + "\",\"status\":\"online\",\"timestamp\":" + String(millis()) + "}";
-      publishStatus(statusMsg);
+      // Publicar mensagem de registro apenas uma vez por sessão
+      publishRegistrationMessage();
+
+      // Publicar status ONLINE após a conexão bem-sucedida
+      publishStatus("online");
       return;
     }
     else
@@ -197,6 +203,30 @@ void reconnectMQTT()
   }
 }
 
+void publishRegistrationMessage()
+{
+  if (mqttClient.connected())
+  {
+    String mac = WiFi.macAddress();
+    String ip = WiFi.localIP().toString();
+    String macClean = getDeviceMacClean();
+    String macSuffix = macClean.substring(6);
+    String deviceName = "irrigacao-verdea-" + macSuffix;
+
+    // Cria um objeto JSON com todos os dados
+    DynamicJsonDocument doc(256);
+    doc["name"] = deviceName;
+    doc["macAddress"] = mac;
+    doc["currentIp"] = ip;
+
+    String registrationPayload;
+    serializeJson(doc, registrationPayload);
+
+    mqttClient.publish(topic_register, registrationPayload.c_str());
+    Serial.println("📤 Mensagem de registro com dados completos publicada.");
+  }
+}
+
 void handleMQTT()
 {
   if (!mqttClient.connected())
@@ -209,20 +239,21 @@ void handleMQTT()
   }
 }
 
-void publishStatus(String payload)
+void publishStatus(String status)
 {
   if (mqttClient.connected())
   {
-    String mac = WiFi.macAddress();
-    mac.replace(":", "");
-    String deviceTopicStatus = "verdea/status/" + mac;
+    String deviceTopicStatus = getDeviceTopicStatus();
+    String payload = buildStatusPayload(status);
 
-    // Publica status no tópico específico do dispositivo
-    bool result = mqttClient.publish(deviceTopicStatus.c_str(), payload.c_str());
+    // Publica status no tópico específico do dispositivo com retained = true
+    bool result = mqttClient.publish(deviceTopicStatus.c_str(), payload.c_str(), true);
 
     if (result)
     {
-      Serial.println("📤 Status publicado com sucesso");
+      Serial.print("📤 Status '");
+      Serial.print(status);
+      Serial.println("' publicado com sucesso");
     }
     else
     {
