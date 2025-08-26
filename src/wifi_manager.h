@@ -19,13 +19,66 @@ void checkOfflineMode();
 bool getOfflineMode();
 bool getOnlineMode();
 void resetWiFiSettings();
+void sendDeviceInfo(); // ✅ Nova função para enviar os dados para o backend
 
 // Variável interna para controle de reconexão
 bool isReconnecting = false;
 
+// Variável global para armazenar o email (precisa ser global para ser acessada no callback)
+String userEmail = "";
+
+// ✅ Parâmetro personalizado para o email
+WiFiManagerParameter customEmail("userEmail", "E-mail cadastrado na plataforma Verdea", "", 50, "required");
+
+void sendDeviceInfo() {
+  Serial.println("✅ WiFi conectado. Enviando dados do dispositivo...");
+
+  // Coletar o email do campo
+  userEmail = customEmail.getValue();
+
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+
+  if (userEmail.length() > 0) {
+    WiFiClient client;
+    HTTPClient http;
+
+    http.begin(client, "http://192.168.15.115:8080/api/device/send-mac");
+    http.addHeader("Content-Type", "application/json");
+
+    DynamicJsonDocument doc(256);
+    doc["email"] = userEmail;
+    doc["deviceName"] = "irrigacao-verdea-" + mac;
+    doc["macAddress"] = WiFi.macAddress();
+
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
+
+    Serial.println("📤 Payload: " + jsonPayload);
+
+    int httpResponseCode = http.POST(jsonPayload);
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println("✅ Resposta da API (" + String(httpResponseCode) + "): " + response);
+    } else {
+      Serial.println("❌ Erro na requisição HTTP: " + String(httpResponseCode));
+    }
+    http.end();
+  } else {
+    Serial.println("⚠️ Nenhum e-mail fornecido. Não será enviado para o backend.");
+  }
+}
+
 // Implementações
 void initWiFi()
 {
+  // Adiciona o campo de e-mail ao portal
+  wifiManager.addParameter(&customEmail);
+
+  // Define um callback para ser chamado após o salvamento das credenciais
+  wifiManager.setSaveConfigCallback(sendDeviceInfo);
+
   // Configurar WiFiManager com timeout
   wifiManager.setConfigPortalTimeout(WIFI_CONFIG_TIMEOUT);
   wifiManager.setConnectTimeout(WIFI_CONNECT_TIMEOUT);
