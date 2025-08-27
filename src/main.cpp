@@ -13,7 +13,6 @@
 
 // Instâncias globais
 ESP8266WebServer server(80);
-WiFiManager wifiManager;
 
 void setup()
 {

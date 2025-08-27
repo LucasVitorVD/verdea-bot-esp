@@ -35,13 +35,6 @@ String getDeviceTopicStatus();
 String getDeviceTopicCommands();
 String buildStatusPayload(String status);
 
-String getDeviceMacClean()
-{
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  return mac;
-}
-
 String getDeviceTopicStatus()
 {
   return "verdea/status/" + getDeviceMacClean();

@@ -3,14 +3,30 @@
 
 #include <ESP8266WiFi.h>
 #include <WiFiManager.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClient.h>
+#include <ArduinoJson.h>
+#include <FS.h>
 #include "config.h"
 
-// Variáveis globais para WiFi
-extern WiFiManager wifiManager;
-extern unsigned long lastConnectionAttempt;
-extern int reconnectAttempts;
-extern bool offlineMode;
-extern bool isOnlineMode;
+// Definição das variáveis globais
+WiFiManager wifiManager;
+unsigned long lastConnectionAttempt = 0;
+int reconnectAttempts = 0;
+bool offlineMode = false;
+bool isOnlineMode = false;
+
+// Variáveis internas para controle
+bool isReconnecting = false;
+String userEmail = "";
+bool isConfigured = false;
+
+// Constantes
+const char* configFilePath = "/config.txt";
+const char* api_endpoint = "http://192.168.15.115:8080/api/device/send-mac";
+
+// Parâmetro personalizado para o e-mail
+WiFiManagerParameter customEmail("userEmail", "E-mail cadastrado na plataforma Verdea", "", 50, "required");
 
 // Declarações das funções
 void initWiFi();
@@ -19,72 +35,136 @@ void checkOfflineMode();
 bool getOfflineMode();
 bool getOnlineMode();
 void resetWiFiSettings();
-void sendDeviceInfo(); // ✅ Nova função para enviar os dados para o backend
+void saveConfig();
+void loadConfig();
+String getDeviceMacClean();
+bool sendDeviceToBackend();
 
-// Variável interna para controle de reconexão
-bool isReconnecting = false;
+// ================= IMPLEMENTAÇÕES DAS FUNÇÕES =================
 
-// Variável global para armazenar o email (precisa ser global para ser acessada no callback)
-String userEmail = "";
+void saveConfig() {
+  if (!SPIFFS.begin()) {
+    Serial.println("❌ Falha ao inicializar SPIFFS");
+    return;
+  }
+  
+  File configFile = SPIFFS.open(configFilePath, "w");
+  if (!configFile) {
+    Serial.println("❌ Erro ao abrir arquivo para escrita.");
+    SPIFFS.end();
+    return;
+  }
+  
+  configFile.print("configured");
+  configFile.close();
+  SPIFFS.end();
+  Serial.println("✅ Estado de configuração salvo.");
+}
 
-// ✅ Parâmetro personalizado para o email
-WiFiManagerParameter customEmail("userEmail", "E-mail cadastrado na plataforma Verdea", "", 50, "required");
+void loadConfig() {
+  if (!SPIFFS.begin()) {
+    Serial.println("❌ Falha ao inicializar SPIFFS");
+    return;
+  }
+  
+  if (SPIFFS.exists(configFilePath)) {
+    File configFile = SPIFFS.open(configFilePath, "r");
+    if (configFile) {
+      String content = configFile.readString();
+      configFile.close();
+      
+      if (content.indexOf("configured") != -1) {
+        isConfigured = true;
+        Serial.println("✅ Estado de configuração carregado.");
+      }
+    }
+  }
+  SPIFFS.end();
+}
 
-void sendDeviceInfo() {
-  Serial.println("✅ WiFi conectado. Enviando dados do dispositivo...");
-
-  // Coletar o email do campo
-  userEmail = customEmail.getValue();
-
+String getDeviceMacClean() {
   String mac = WiFi.macAddress();
   mac.replace(":", "");
+  return mac;
+}
 
-  if (userEmail.length() > 0) {
-    WiFiClient client;
-    HTTPClient http;
+bool sendDeviceToBackend() {
+  if (userEmail.length() == 0) {
+    Serial.println("⚠️ Nenhum e-mail fornecido.");
+    return false;
+  }
 
-    http.begin(client, "http://192.168.15.115:8080/api/device/send-mac");
-    http.addHeader("Content-Type", "application/json");
+  WiFiClient client;
+  HTTPClient http;
 
-    DynamicJsonDocument doc(256);
-    doc["email"] = userEmail;
-    doc["deviceName"] = "irrigacao-verdea-" + mac;
-    doc["macAddress"] = WiFi.macAddress();
+  http.begin(client, api_endpoint);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(10000); // 10 segundos timeout
 
-    String jsonPayload;
-    serializeJson(doc, jsonPayload);
+  DynamicJsonDocument doc(256);
+  doc["email"] = userEmail;
+  doc["deviceName"] = "irrigacao-verdea-" + getDeviceMacClean();
+  doc["macAddress"] = WiFi.macAddress();
 
-    Serial.println("📤 Payload: " + jsonPayload);
+  String jsonPayload;
+  serializeJson(doc, jsonPayload);
 
-    int httpResponseCode = http.POST(jsonPayload);
+  Serial.println("📤 Enviando payload: " + jsonPayload);
 
-    if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.println("✅ Resposta da API (" + String(httpResponseCode) + "): " + response);
-    } else {
-      Serial.println("❌ Erro na requisição HTTP: " + String(httpResponseCode));
-    }
-    http.end();
+  int httpResponseCode = http.POST(jsonPayload);
+  String response = http.getString();
+  
+  http.end();
+
+  if (httpResponseCode == 200) {
+    Serial.println("✅ Resposta da API (" + String(httpResponseCode) + "): " + response);
+    return true;
   } else {
-    Serial.println("⚠️ Nenhum e-mail fornecido. Não será enviado para o backend.");
+    Serial.println("❌ Erro na requisição HTTP: " + String(httpResponseCode));
+    Serial.println("Resposta: " + response);
+    return false;
   }
 }
 
-// Implementações
-void initWiFi()
-{
-  // Adiciona o campo de e-mail ao portal
-  wifiManager.addParameter(&customEmail);
-
-  // Define um callback para ser chamado após o salvamento das credenciais
-  wifiManager.setSaveConfigCallback(sendDeviceInfo);
-
-  // Configurar WiFiManager com timeout
+void initWiFi() {
+  Serial.println("🔄 Inicializando WiFi Manager...");
+  
+  // Carrega configuração existente
+  loadConfig();
+  
+  if (isConfigured) {
+    Serial.println("✅ Configuração já existente. Tentando conectar...");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin();
+    
+    // Aguarda conexão por até 30 segundos
+    int timeout = 30;
+    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
+      delay(1000);
+      Serial.print(".");
+      timeout--;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n✅ Conectado ao WiFi!");
+      Serial.println("📶 Rede: " + WiFi.SSID());
+      Serial.println("📍 IP: " + WiFi.localIP().toString());
+      isOnlineMode = true;
+      offlineMode = false;
+      return;
+    } else {
+      Serial.println("\n❌ Falha na conexão automática. Iniciando configuração...");
+      isConfigured = false; // Reset para forçar nova configuração
+    }
+  }
+  
+  // Configurar WiFiManager
   wifiManager.setConfigPortalTimeout(WIFI_CONFIG_TIMEOUT);
   wifiManager.setConnectTimeout(WIFI_CONNECT_TIMEOUT);
+  wifiManager.addParameter(&customEmail);
 
-  wifiManager.setAPCallback([](WiFiManager *myWiFiManager)
-                            {
+  // Callback para quando entra em modo AP
+  wifiManager.setAPCallback([](WiFiManager *myWiFiManager) {
     Serial.println("📡 =================================");
     Serial.println("📡 MODO DE CONFIGURAÇÃO ATIVADO");
     Serial.println("📡 =================================");
@@ -93,145 +173,145 @@ void initWiFi()
     Serial.println("📡 IP: " + WiFi.softAPIP().toString());
     Serial.println("📡 =================================");
     Serial.println("📡 Acesse: http://" + WiFi.softAPIP().toString());
-    Serial.println("📡 Tempo limite: 5 minutos");
-    Serial.println("📡 =================================\n"); });
+    Serial.println("📡 Tempo limite: " + String(WIFI_CONFIG_TIMEOUT/60000) + " minutos");
+    Serial.println("📡 =================================\n");
+  });
 
-  Serial.println("🔄 Tentando conectar ao WiFi...");
+  // Callback para quando salva configuração
+  wifiManager.setSaveConfigCallback([]() {
+    Serial.println("✅ Configuração WiFi salva!");
+    userEmail = customEmail.getValue();
+    Serial.println("📧 E-mail recebido: " + userEmail);
+  });
 
-  if (!wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD))
-  {
-    Serial.println("❌ Falha na conexão WiFi");
-    Serial.println("🚨 ATIVANDO MODO OFFLINE IMEDIATAMENTE");
-
+  Serial.println("🔄 Iniciando portal de configuração...");
+  
+  if (wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD)) {
+    Serial.println("✅ Conectado ao WiFi!");
+    Serial.println("📶 Rede: " + WiFi.SSID());
+    Serial.println("📍 IP: " + WiFi.localIP().toString());
+    
+    userEmail = customEmail.getValue();
+    
+    if (userEmail.length() > 0) {
+      Serial.println("📤 Enviando dados para o backend...");
+      
+      if (sendDeviceToBackend()) {
+        Serial.println("✅ Dispositivo vinculado com sucesso!");
+        saveConfig();
+        isOnlineMode = true;
+        offlineMode = false;
+        
+        Serial.println("✅ Configuração concluída! Reiniciando em 3 segundos...");
+        delay(3000);
+        ESP.restart();
+      } else {
+        Serial.println("❌ Falha na vinculação com backend.");
+        Serial.println("🔄 Resetando configurações para nova tentativa...");
+        resetWiFiSettings();
+        delay(3000);
+        ESP.restart();
+      }
+    } else {
+      Serial.println("⚠️ E-mail não fornecido. Resetando configurações...");
+      resetWiFiSettings();
+      delay(3000);
+      ESP.restart();
+    }
+  } else {
+    Serial.println("❌ Timeout na configuração WiFi");
+    Serial.println("🚨 ATIVANDO MODO OFFLINE");
+    
     offlineMode = true;
     isOnlineMode = false;
     reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
-
-    Serial.println("🌱 Sistema funcionará autonomamente");
-  }
-  else
-  {
-    Serial.println("✅ Conectado ao WiFi!");
-    Serial.println("📶 Rede: " + WiFi.SSID());
-
-    offlineMode = false;
-    isOnlineMode = true;
-    reconnectAttempts = 0;
+    
+    Serial.println("🌱 Sistema funcionará em modo autônomo");
   }
 }
 
-void handleWiFiConnection()
-{
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    if (!isReconnecting && millis() - lastConnectionAttempt > CONNECTION_TIMEOUT)
-    {
+void handleWiFiConnection() {
+  // Se está em modo offline, não tenta reconectar
+  if (offlineMode) {
+    return;
+  }
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!isReconnecting && (millis() - lastConnectionAttempt) > CONNECTION_TIMEOUT) {
       isReconnecting = true;
       lastConnectionAttempt = millis();
-      Serial.println("📶 WiFi desconectado - tentando reconectar...");
-      WiFi.reconnect();
-    }
-
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS)
-    {
-      reconnectAttempts = 0;
+      reconnectAttempts++;
       
-      Serial.println("🚨 Máximo de tentativas atingido - entrando em modo AP para reconfiguração");
-
-      wifiManager.setConfigPortalTimeout(WIFI_CONFIG_TIMEOUT);
-
-      bool configResult = wifiManager.startConfigPortal(WIFI_AP_NAME, WIFI_AP_PASSWORD);
-
-      if (configResult)
-      {
-        Serial.println("✅ Configuração WiFi concluída com sucesso!");
+      Serial.println("📶 WiFi desconectado - tentativa " + String(reconnectAttempts) + 
+                     "/" + String(MAX_RECONNECT_ATTEMPTS));
+      
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        WiFi.reconnect();
+      } else {
+        Serial.println("🚨 Máximo de tentativas atingido - ATIVANDO MODO OFFLINE");
+        offlineMode = true;
+        isOnlineMode = false;
+        reconnectAttempts = 0;
+        isReconnecting = false;
+        Serial.println("🌱 Sistema funcionará em modo autônomo");
       }
-      else
-      {
-        Serial.println("⏰ Timeout do modo AP expirado - tentando reconectar...");
-      }
-
-      // Após sair do modo AP, tenta conectar normalmente
-      if (WiFi.status() != WL_CONNECTED)
-      {
-        Serial.println("🔄 Tentando conectar ao WiFi após modo AP...");
-        if (!wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD))
-        {
-          Serial.println("❌ Falha na conexão WiFi após modo AP");
-          // Entrar em modo offline só após esse segundo fracasso
-          offlineMode = true;
-          isOnlineMode = false;
-          reconnectAttempts = 0;
-          Serial.println("🌱 Entrando em modo OFFLINE");
-        }
-        else
-        {
-          Serial.println("✅ Conectado ao WiFi após modo AP");
-          offlineMode = false;
-          isOnlineMode = true;
-          reconnectAttempts = 0;
-        }
-      }
-
-      isReconnecting = false; // Reset flag
     }
-  }
-  else // WiFi conectado
-  {
-    if (isReconnecting)
-    {
+  } else {
+    if (isReconnecting) {
       Serial.println("✅ Reconexão WiFi bem-sucedida");
       isReconnecting = false;
-    }
-
-    if (offlineMode)
-    {
-      offlineMode = false;
       reconnectAttempts = 0;
+    }
+    
+    if (offlineMode) {
+      offlineMode = false;
       isOnlineMode = true;
-      Serial.println("🔄 WiFi reconectado - Saiu do modo OFFLINE");
+      Serial.println("🔄 WiFi reconectado - Sistema ONLINE");
     }
   }
 }
 
-void checkOfflineMode()
-{
-  reconnectAttempts++;
-  Serial.println("🔄 Tentativa de reconexão: " + String(reconnectAttempts) + "/" + String(MAX_RECONNECT_ATTEMPTS));
+void checkOfflineMode() {
+  if (!offlineMode) {
+    reconnectAttempts++;
+    Serial.println("🔄 Verificação offline - tentativa: " + String(reconnectAttempts) + 
+                   "/" + String(MAX_RECONNECT_ATTEMPTS));
 
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS)
-  {
-    Serial.println("🚨 Máximo de tentativas atingido - ATIVANDO MODO OFFLINE");
-    offlineMode = true;
-    isOnlineMode = false;
-    reconnectAttempts = 0;
-
-    Serial.println("🌱 Sistema funcionará em modo autônomo");
-    Serial.println("   - Irrigação baseada em sensor de umidade");
-    Serial.println("   - Limite: " + String(DEFAULT_MOISTURE_THRESHOLD) + "%");
-    Serial.println("   - Duração: " + String(DEFAULT_IRRIGATION_DURATION / 1000) + " segundos");
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      Serial.println("🚨 Máximo de tentativas atingido - ATIVANDO MODO OFFLINE");
+      offlineMode = true;
+      isOnlineMode = false;
+      reconnectAttempts = 0;
+      Serial.println("🌱 Sistema funcionará em modo autônomo");
+    }
   }
 }
 
-bool getOfflineMode()
-{
-  return offlineMode;
+// Funções getter
+bool getOfflineMode() { 
+  return offlineMode; 
 }
 
-bool getOnlineMode()
-{
-  return isOnlineMode;
+bool getOnlineMode() { 
+  return isOnlineMode; 
 }
 
-void resetWiFiSettings()
-{
+// Função para reset das configurações WiFi
+void resetWiFiSettings() { 
+  Serial.println("🔄 Resetando configurações WiFi...");
   wifiManager.resetSettings();
+  
+  // Remove arquivo de configuração
+  if (SPIFFS.begin()) {
+    if (SPIFFS.exists(configFilePath)) {
+      SPIFFS.remove(configFilePath);
+      Serial.println("✅ Arquivo de configuração removido.");
+    }
+    SPIFFS.end();
+  }
+  
+  isConfigured = false;
+  Serial.println("✅ Configurações resetadas com sucesso!");
 }
-
-// Variáveis globais
-unsigned long lastConnectionAttempt = 0;
-int reconnectAttempts = 0;
-bool offlineMode = false;
-bool isOnlineMode = false;
 
 #endif
