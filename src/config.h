@@ -34,4 +34,10 @@ const int WIFI_CONNECT_TIMEOUT = 30; // 30 segundos
 const char* ESP_BASIC_AUTH_USER = "admin";
 const char* ESP_BASIC_AUTH_PASS = "verdea123";
 
+// Configurações do broker MQTT
+const char *mqtt_broker = "702eccd77d014186bfc53d1a2d5546d8.s1.eu.hivemq.cloud";
+const int mqtt_port = 8883;
+const char *mqtt_username = "verdea";
+const char *mqtt_password = "Verdea14072025";
+
 #endif

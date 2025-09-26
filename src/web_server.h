@@ -45,8 +45,6 @@ void handleStatus()
   doc["wifi"]["ssid"] = WiFi.SSID();
   doc["wifi"]["rssi"] = WiFi.RSSI();
   doc["wifi"]["ip"] = WiFi.localIP().toString();
-  doc["pump"]["status"] = getPumpStatus() ? "on" : "off";
-  doc["sensor"]["soilMoisture"] = getSoilMoisture();
   doc["system"]["uptime"] = millis() / 1000;
   doc["system"]["reconnectAttempts"] = reconnectAttempts;
 

@@ -6,7 +6,6 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h>
 #include <ArduinoJson.h>
-#include <FS.h>
 #include "config.h"
 
 // Definição das variáveis globais
@@ -15,14 +14,10 @@ unsigned long lastConnectionAttempt = 0;
 int reconnectAttempts = 0;
 bool offlineMode = false;
 bool isOnlineMode = false;
-
-// Variáveis internas para controle
 bool isReconnecting = false;
 String userEmail = "";
-bool isConfigured = false;
 
 // Constantes
-const char* configFilePath = "/config.txt";
 const char* api_endpoint = "http://192.168.15.115:8080/api/device/send-mac";
 
 // Parâmetro personalizado para o e-mail
@@ -35,52 +30,10 @@ void checkOfflineMode();
 bool getOfflineMode();
 bool getOnlineMode();
 void resetWiFiSettings();
-void saveConfig();
-void loadConfig();
 String getDeviceMacClean();
 bool sendDeviceToBackend();
 
 // ================= IMPLEMENTAÇÕES DAS FUNÇÕES =================
-
-void saveConfig() {
-  if (!SPIFFS.begin()) {
-    Serial.println("❌ Falha ao inicializar SPIFFS");
-    return;
-  }
-  
-  File configFile = SPIFFS.open(configFilePath, "w");
-  if (!configFile) {
-    Serial.println("❌ Erro ao abrir arquivo para escrita.");
-    SPIFFS.end();
-    return;
-  }
-  
-  configFile.print("configured");
-  configFile.close();
-  SPIFFS.end();
-  Serial.println("✅ Estado de configuração salvo.");
-}
-
-void loadConfig() {
-  if (!SPIFFS.begin()) {
-    Serial.println("❌ Falha ao inicializar SPIFFS");
-    return;
-  }
-  
-  if (SPIFFS.exists(configFilePath)) {
-    File configFile = SPIFFS.open(configFilePath, "r");
-    if (configFile) {
-      String content = configFile.readString();
-      configFile.close();
-      
-      if (content.indexOf("configured") != -1) {
-        isConfigured = true;
-        Serial.println("✅ Estado de configuração carregado.");
-      }
-    }
-  }
-  SPIFFS.end();
-}
 
 String getDeviceMacClean() {
   String mac = WiFi.macAddress();
@@ -129,39 +82,20 @@ bool sendDeviceToBackend() {
 void initWiFi() {
   Serial.println("🔄 Inicializando WiFi Manager...");
   
-  // Carrega configuração existente
-  loadConfig();
-  
-  if (isConfigured) {
-    Serial.println("✅ Configuração já existente. Tentando conectar...");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin();
-    
-    // Aguarda conexão por até 30 segundos
-    int timeout = 30;
-    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
-      delay(1000);
-      Serial.print(".");
-      timeout--;
-    }
-    
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\n✅ Conectado ao WiFi!");
-      Serial.println("📶 Rede: " + WiFi.SSID());
-      Serial.println("📍 IP: " + WiFi.localIP().toString());
-      isOnlineMode = true;
-      offlineMode = false;
-      return;
-    } else {
-      Serial.println("\n❌ Falha na conexão automática. Iniciando configuração...");
-      isConfigured = false; // Reset para forçar nova configuração
-    }
-  }
-  
   // Configurar WiFiManager
   wifiManager.setConfigPortalTimeout(WIFI_CONFIG_TIMEOUT);
   wifiManager.setConnectTimeout(WIFI_CONNECT_TIMEOUT);
   wifiManager.addParameter(&customEmail);
+
+  // Mensagem de instrução personalizada
+  String customHtml = "<div style='margin: 20px 0; padding: 15px; background-color: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>";
+  customHtml += "<h3 style='margin-top: 0; color: #1976d2; font-family: Arial, sans-serif;'>📧 Instruções Importantes:</h3>";
+  customHtml += "<p style='margin: 10px 0; font-size: 14px;'><strong>1.</strong> Insira o e-mail <strong>cadastrado na plataforma Verdea</strong></p>";
+  customHtml += "<p style='margin: 10px 0; font-size: 14px;'><strong>2.</strong> Após conectar, <strong>verifique se recebeu confirmação no e-mail</strong></p>";
+  customHtml += "<p style='margin: 10px 0; font-size: 14px;'><strong>3.</strong> Se não receber confirmação, reconecte-se à rede <strong style='color: #d32f2f;'>" + String(WIFI_AP_NAME) + "</strong> e reconfigure</p>";
+  customHtml += "<p style='margin: 15px 0 0 0; padding: 10px; background-color: #fff3e0; border-radius: 4px; font-size: 13px; color: #ef6c00;'>";
+  customHtml += "⚠️ <strong>Importante:</strong> Se o e-mail não for encontrado na plataforma, as configurações serão resetadas automaticamente.</p>";
+  customHtml += "</div>";
 
   // Callback para quando entra em modo AP
   wifiManager.setAPCallback([](WiFiManager *myWiFiManager) {
@@ -184,7 +118,10 @@ void initWiFi() {
     Serial.println("📧 E-mail recebido: " + userEmail);
   });
 
-  Serial.println("🔄 Iniciando portal de configuração...");
+  // Define a mensagem customizada
+  wifiManager.setCustomHeadElement(customHtml.c_str());
+
+  Serial.println("🔄 Iniciando conexão WiFi...");
   
   if (wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD)) {
     Serial.println("✅ Conectado ao WiFi!");
@@ -198,7 +135,6 @@ void initWiFi() {
       
       if (sendDeviceToBackend()) {
         Serial.println("✅ Dispositivo vinculado com sucesso!");
-        saveConfig();
         isOnlineMode = true;
         offlineMode = false;
         
@@ -213,10 +149,10 @@ void initWiFi() {
         ESP.restart();
       }
     } else {
-      Serial.println("⚠️ E-mail não fornecido. Resetando configurações...");
-      resetWiFiSettings();
-      delay(3000);
-      ESP.restart();
+      // Se conectou mas não tem e-mail (conexão automática), funciona normalmente
+      Serial.println("ℹ️ Conectado automaticamente - funcionando normalmente");
+      isOnlineMode = true;
+      offlineMode = false;
     }
   } else {
     Serial.println("❌ Timeout na configuração WiFi");
@@ -299,18 +235,8 @@ bool getOnlineMode() {
 // Função para reset das configurações WiFi
 void resetWiFiSettings() { 
   Serial.println("🔄 Resetando configurações WiFi...");
-  wifiManager.resetSettings();
-  
-  // Remove arquivo de configuração
-  if (SPIFFS.begin()) {
-    if (SPIFFS.exists(configFilePath)) {
-      SPIFFS.remove(configFilePath);
-      Serial.println("✅ Arquivo de configuração removido.");
-    }
-    SPIFFS.end();
-  }
-  
-  isConfigured = false;
+  wifiManager.resetSettings(); // Isso limpa TUDO que o WiFiManager salvou
+  userEmail = "";
   Serial.println("✅ Configurações resetadas com sucesso!");
 }
 

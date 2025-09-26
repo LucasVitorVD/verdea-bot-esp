@@ -9,12 +9,6 @@
 #include "wifi_manager.h"
 #include "irrigation_controller.h"
 
-// Configurações do broker MQTT
-const char *mqtt_broker = "702eccd77d014186bfc53d1a2d5546d8.s1.eu.hivemq.cloud";
-const int mqtt_port = 8883;
-const char *mqtt_username = "verdea";
-const char *mqtt_password = "Verdea14072025";
-
 // Tópicos base
 const char *topic_commands = "verdea/commands";
 const char *topic_register = "verdea/device/register";
@@ -45,11 +39,12 @@ String getDeviceTopicCommands()
   return "verdea/commands/" + getDeviceMacClean();
 }
 
-String buildStatusPayload(String status) {
+String buildStatusPayload(String status)
+{
   DynamicJsonDocument doc(128);
   doc["macAddress"] = WiFi.macAddress();
   doc["status"] = status;
-  
+
   String payload;
   serializeJson(doc, payload);
   return payload;
@@ -77,30 +72,81 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   {
     msg += (char)payload[i];
   }
-
   Serial.println(msg);
 
-  // Lógica para comandos de irrigação (tópicos gerais ou específicos do dispositivo)
   String deviceTopicCommands = getDeviceTopicCommands();
 
   if (String(topic) == topic_commands || String(topic) == deviceTopicCommands)
   {
-    if (msg == "ON")
+    // Tenta interpretar como JSON
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, msg);
+
+    if (!error)
     {
-      controlPump(true);
-      Serial.println("💧 Comando de LIGAR bomba recebido.");
+      // Se o payload for JSON válido, interpretamos como config de planta
+      String mode = doc["mode"] | "AUTO";
+      String wateringTime = doc["wateringTime"] | "";
+      String wateringFrequency = doc["wateringFrequency"] | "";
+      wateringFrequency.toLowerCase();
+      int idealSoilMoisture = doc["idealSoilMoisture"].is<int>()
+                                  ? doc["idealSoilMoisture"].as<int>()
+                                  : (int)doc["idealSoilMoisture"].as<double>();
+
+      // ✅ Converte "HH:mm" em hour/minute
+      int hour = 0, minute = 0;
+      if (wateringTime.length() >= 4)
+      {
+        int sepIndex = wateringTime.indexOf(':');
+        if (sepIndex > 0)
+        {
+          hour = wateringTime.substring(0, sepIndex).toInt();
+          minute = wateringTime.substring(sepIndex + 1).toInt();
+        }
+      }
+
+      setIrrigationConfig(mode, hour, minute, wateringFrequency, idealSoilMoisture);
+
+      // ✅ ADICIONAR: Debug da configuração recebida
+      Serial.println("🔧 Configuração recebida via MQTT:");
+      Serial.println("   Mode: " + mode);
+      Serial.println("   Hour: " + String(hour));
+      Serial.println("   Minute: " + String(minute));
+      Serial.println("   Frequency: " + wateringFrequency);
+      Serial.print("   Ideal Moisture: ");
+      Serial.println(idealSoilMoisture);
+
+      // Checa se é comando de DELETE_PLANT
+      if (doc.containsKey("command") && String(doc["command"]) == "DELETE_PLANT")
+      {
+        resetIrrigationConfig();
+        controlPump(false, "Modo AUTO (planta deletada)");
+        Serial.println("🚨 Planta deletada - ESP resetado para AUTO");
+      }
     }
-    else if (msg == "OFF")
+    else
     {
-      controlPump(false);
-      Serial.println("💧 Comando de DESLIGAR bomba recebido.");
-    }
-    else if (msg == "RESET_WIFI")
-    {
-      Serial.println("🚨 Comando de RESET_WIFI recebido via MQTT!");
-      delay(1000); // Dá tempo para o log ser enviado
-      resetWiFiSettings();
-      ESP.restart(); // Reinicia o dispositivo
+      // Caso não seja JSON → trata como comando simples
+      if (msg == "ON")
+      {
+        controlPump(true, "Comando manual ON.");
+        Serial.println("💧 Comando de LIGAR bomba recebido.");
+      }
+      else if (msg == "RESET_WIFI")
+      {
+        Serial.println("🚨 Comando de RESET_WIFI recebido via MQTT!");
+        delay(1000);
+        resetWiFiSettings();
+        ESP.restart();
+      }
+      else if (msg == "DELETE_PLANT")
+      {
+        resetIrrigationConfig();
+      }
+      else
+      {
+        Serial.println("⚠️ Payload ignorado (não é JSON nem comando conhecido).");
+      }
     }
   }
 }
@@ -126,11 +172,17 @@ void reconnectMQTT()
     {
       Serial.println("✅ Conectado!");
 
-      // Inscrever nos tópicos de comando
-      mqttClient.subscribe(getDeviceTopicCommands().c_str());
+      // ✅ ADICIONAR: Log dos tópicos que está se inscrevendo
+      String deviceCommandsTopic = getDeviceTopicCommands();
+      Serial.print("🔗 Inscrevendo no tópico específico: ");
+      Serial.println(deviceCommandsTopic);
+      mqttClient.subscribe(deviceCommandsTopic.c_str());
+
+      Serial.print("🔗 Inscrevendo no tópico geral: ");
+      Serial.println(topic_commands);
       mqttClient.subscribe(topic_commands);
 
-      Serial.println("🔗 Inscrito em tópicos de comando.");
+      Serial.println("🔗 Inscrições realizadas com sucesso!");
 
       // Publicar mensagem de registro apenas uma vez por sessão
       publishRegistrationMessage();

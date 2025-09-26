@@ -3,6 +3,9 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <ArduinoJson.h>
+#include <time.h>
+#include <TimeLib.h>
+#include "time_utils.h"
 
 // Incluir os módulos
 #include "config.h"
@@ -20,17 +23,18 @@ void setup()
   delay(2000);
 
   Serial.println("🌱 =================================");
-  Serial.println("🌱 Sistema de Irrigação Inteligente");
-  Serial.println("🌱 Verdea - Modo Híbrido");
+  Serial.println("🌱 Sistema de Irrigação Inteligente Verdea");
   Serial.println("🌱 =================================\n");
 
   // Inicializar WiFi
   initWiFi();
 
-  // Inicializar API se conectado
+  // Inicializar MQTT se conectado
   if (WiFi.status() == WL_CONNECTED)
   {
     // initAPI();
+
+    setupTime();
 
     // Inicializar MQTT
     initMQTT();
@@ -55,14 +59,40 @@ void loop()
   // Gerenciar conectividade WiFi
   handleWiFiConnection();
 
+  // ✅ Sincronizar horário periodicamente se online
+  static unsigned long lastTimeSync = 0;
+  if (WiFi.status() == WL_CONNECTED && millis() - lastTimeSync > 3600000) // A cada 1 hora
+  {
+    setupTime();
+    lastTimeSync = millis();
+  }
+
   // Processar MQTT
   handleMQTT();
 
   // Controlar sistema de irrigação
   handleIrrigation();
 
+  // Gerenciar timer de irrigação
+  handleIrrigationTimer();
+
   // Log de status periódico
   handleStatusLog();
+
+  // ✅ Debug temporário no loop()
+  static unsigned long lastTimeDebug = 0;
+  if (millis() - lastTimeDebug > 30000)
+  { // A cada 30 segundos
+    if (isTimeSynchronized())
+    {
+      struct tm timeinfo;
+      time_t nowTime = time(nullptr);
+      localtime_r(&nowTime, &timeinfo);
+      Serial.printf("🕐 DEBUG: Hora local: %02d:%02d:%02d\n",
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    }
+    lastTimeDebug = millis();
+  }
 
   delay(1000);
 }
