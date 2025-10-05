@@ -84,45 +84,38 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 
     if (!error)
     {
-      // Se o payload for JSON válido, interpretamos como config de planta
+      // Checa se é comando de DELETE_PLANT
+      if (doc.containsKey("command") && String(doc["command"]) == "DELETE_PLANT")
+      {
+        resetIrrigationConfig();
+        controlPump(false, "Planta deletada");
+        Serial.println("🚨 Planta deletada - ESP resetado para AUTO");
+
+        return;
+      }
+
       String mode = doc["mode"] | "AUTO";
-      String wateringTime = doc["wateringTime"] | "";
+      JsonArray wateringTimesArray = doc["wateringTimes"]; // ✅ Array agora
       String wateringFrequency = doc["wateringFrequency"] | "";
       wateringFrequency.toLowerCase();
       int idealSoilMoisture = doc["idealSoilMoisture"].is<int>()
                                   ? doc["idealSoilMoisture"].as<int>()
                                   : (int)doc["idealSoilMoisture"].as<double>();
 
-      // ✅ Converte "HH:mm" em hour/minute
-      int hour = 0, minute = 0;
-      if (wateringTime.length() >= 4)
-      {
-        int sepIndex = wateringTime.indexOf(':');
-        if (sepIndex > 0)
-        {
-          hour = wateringTime.substring(0, sepIndex).toInt();
-          minute = wateringTime.substring(sepIndex + 1).toInt();
-        }
-      }
+      setIrrigationConfig(mode, wateringTimesArray, wateringFrequency, idealSoilMoisture);
 
-      setIrrigationConfig(mode, hour, minute, wateringFrequency, idealSoilMoisture);
-
-      // ✅ ADICIONAR: Debug da configuração recebida
+      // Debug
       Serial.println("🔧 Configuração recebida via MQTT:");
       Serial.println("   Mode: " + mode);
-      Serial.println("   Hour: " + String(hour));
-      Serial.println("   Minute: " + String(minute));
+      Serial.print("   Horários: ");
+      for (JsonVariant v : wateringTimesArray)
+      {
+        Serial.print(v.as<String>() + " ");
+      }
+      Serial.println();
       Serial.println("   Frequency: " + wateringFrequency);
       Serial.print("   Ideal Moisture: ");
       Serial.println(idealSoilMoisture);
-
-      // Checa se é comando de DELETE_PLANT
-      if (doc.containsKey("command") && String(doc["command"]) == "DELETE_PLANT")
-      {
-        resetIrrigationConfig();
-        controlPump(false, "Modo AUTO (planta deletada)");
-        Serial.println("🚨 Planta deletada - ESP resetado para AUTO");
-      }
     }
     else
     {

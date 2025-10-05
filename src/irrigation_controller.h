@@ -27,8 +27,15 @@ const int BUFFER_SEGURANCA = 10;                     // +10% além do ideal
 String irrigationMode = "AUTO"; // AUTO ou SCHEDULED
 int idealSoilMoisture = 0;      // alvo %
 
-int wateringHour = 0;
-int wateringMinute = 0;
+struct WateringTime
+{
+  int hour;
+  int minute;
+  bool executed; // para controlar se já foi executado hoje
+};
+
+WateringTime wateringTimes[2]; // Suporta até 2 horários
+int wateringTimesCount = 0;    // Quantos horários estão configurados
 String wateringFrequency = "once_a_day";
 
 bool isIrrigating = false;
@@ -40,12 +47,15 @@ unsigned long lastWateringMillis = 0;
 
 int soilMoisture = 0;
 
-String lastStatusSolo = "";
-int lastSoilMoisture = -1;
-
 // ✅ CORREÇÃO: Variáveis para controle do horário agendado
 int lastTriggeredDay = -1;        // Dia da última irrigação agendada
 bool dailyIrrigationDone = false; // Flag para controlar se já irrigou hoje
+
+unsigned long lastIrrigationEndTime = 0;
+const unsigned long MIN_INTERVAL_BETWEEN_IRRIGATIONS = 300000; // 5 minutos em ms
+
+String lastDisplayedMode = "";
+int lastDisplayedMoisture = -1;
 
 // ================= FUNÇÕES =================
 struct tm getCurrentTime()
@@ -72,6 +82,14 @@ void checkDayChange()
   if (lastTriggeredDay != -1 && currentDay != lastTriggeredDay)
   {
     dailyIrrigationDone = false;
+
+    for (int i = 0; i < wateringTimesCount; i++)
+    {
+      wateringTimes[i].executed = false;
+    }
+
+    lastIrrigationEndTime = 0;
+
     Serial.printf("🗓️ Novo dia detectado (Dia %d) - Irrigação liberada\n", currentDay);
   }
 
@@ -143,6 +161,7 @@ void stopIrrigation(String motivo)
 {
   isIrrigating = false;
   lastWateringMillis = millis();
+  lastIrrigationEndTime = millis(); // ✅ Registrar quando terminou
   controlPump(false, motivo);
 }
 
@@ -151,17 +170,38 @@ void handleIrrigation()
   soilMoisture = readSoilMoisture();
 
   // --- Atualização do Display ---
-  static String lastDisplayedMode = "";
-  static int lastDisplayedMoisture = -1;
   static unsigned long lastLogTime = 0;
 
   if (irrigationMode != lastDisplayedMode)
   {
     lcd.setCursor(0, 0);
-    if (irrigationMode == "SCHEDULED")
+    if (irrigationMode == "SCHEDULED" && wateringTimesCount > 0)
     {
-      lcd.print("AGENDADO " + String(wateringHour) + ":" +
-                (wateringMinute < 10 ? "0" : "") + String(wateringMinute) + "   ");
+      // ✅ ENCONTRAR O PRÓXIMO HORÁRIO NÃO EXECUTADO
+      int nextScheduleIndex = -1;
+      for (int i = 0; i < wateringTimesCount; i++)
+      {
+        if (!wateringTimes[i].executed)
+        {
+          nextScheduleIndex = i;
+          break;
+        }
+      }
+
+      // Se encontrou horário pendente, mostrar ele
+      if (nextScheduleIndex >= 0)
+      {
+        lcd.print("AGENDADO " + String(wateringTimes[nextScheduleIndex].hour) + ":" +
+                  (wateringTimes[nextScheduleIndex].minute < 10 ? "0" : "") +
+                  String(wateringTimes[nextScheduleIndex].minute) + "   ");
+      }
+      else
+      {
+        // Todos executados, mostrar o primeiro
+        lcd.print("AGENDADO " + String(wateringTimes[0].hour) + ":" +
+                  (wateringTimes[0].minute < 10 ? "0" : "") +
+                  String(wateringTimes[0].minute) + "   ");
+      }
     }
     else
     {
@@ -218,43 +258,71 @@ void handleIrrigation()
     int currentMinute = timeinfo.tm_min;
     int currentDay = timeinfo.tm_mday;
 
-    bool isScheduledTime = (currentHour == wateringHour &&
-                            currentMinute >= wateringMinute &&
-                            currentMinute <= (wateringMinute + 2));
-    bool isPastScheduledTime = (currentHour > wateringHour ||
-                                (currentHour == wateringHour && currentMinute > wateringMinute));
-
-    // ✅ LOGS MENOS FREQUENTES - só a cada 30 segundos no modo SCHEDULED
-    static unsigned long lastScheduledLog = 0;
-    if (millis() - lastScheduledLog >= 30000) // 30 segundos
+    for (int i = 0; i < wateringTimesCount; i++)
     {
-      Serial.printf("⏰ [SCHEDULED] Hora: %02d:%02d | Agendado: %02d:%02d | Irrigou hoje: %s\n",
-                    currentHour, currentMinute, wateringHour, wateringMinute,
-                    dailyIrrigationDone ? "SIM" : "NÃO");
-      lastScheduledLog = millis();
+      WateringTime &wt = wateringTimes[i];
+
+      // Se já executou este horário hoje, pular
+      if (wt.executed)
+        continue;
+
+      bool isScheduledTime = (currentHour == wt.hour &&
+                              currentMinute >= wt.minute &&
+                              currentMinute <= (wt.minute + 2));
+
+      if (isScheduledTime)
+      {
+        unsigned long timeSinceLastIrrigation = millis() - lastIrrigationEndTime;
+
+        if (lastIrrigationEndTime > 0 && timeSinceLastIrrigation < MIN_INTERVAL_BETWEEN_IRRIGATIONS)
+        {
+          Serial.printf("⚠️ Horário %d (%02d:%02d) - Irrigação muito recente (%lu segundos atrás)\n",
+                        i + 1, wt.hour, wt.minute, timeSinceLastIrrigation / 1000);
+          Serial.println("   Pulando este horário por segurança");
+          wt.executed = true;
+          lastDisplayedMode = ""; // Forçar atualização do display
+          continue;
+        }
+
+        Serial.printf("🎯 Horário %d agendado atingido (%02d:%02d) - verificando necessidade\n",
+                      i + 1, wt.hour, wt.minute);
+
+        if (soilMoisture < idealSoilMoisture)
+        {
+          Serial.printf("💧 Solo precisa de água (%d%% < %d%%) - iniciando irrigação\n",
+                        soilMoisture, idealSoilMoisture);
+          startIrrigation();
+          wt.executed = true;
+          lastTriggeredDay = currentDay;
+          lastDisplayedMode = "";
+          break;
+        }
+        else
+        {
+          Serial.printf("💧 Solo já está adequado (%d%% >= %d%%) - irrigação não necessária\n",
+                        soilMoisture, idealSoilMoisture);
+          wt.executed = true;
+          lastTriggeredDay = currentDay;
+          lastDisplayedMode = "";
+        }
+      }
     }
 
-    // ✅ SÓ IRRIGAR SE FOR O HORÁRIO EXATO E NÃO IRRIGOU AINDA HOJE
-    if (!dailyIrrigationDone && isScheduledTime)
+    // ✅ LOG PERIÓDICO (a cada 30 segundos)
+    static unsigned long lastScheduledLog = 0;
+    if (millis() - lastScheduledLog >= 30000)
     {
-      Serial.println("🎯 Horário agendado atingido - verificando necessidade de irrigação");
-
-      // Verificar se realmente precisa irrigar
-      if (soilMoisture < idealSoilMoisture)
+      Serial.print("⏰ [SCHEDULED] Hora: ");
+      Serial.printf("%02d:%02d | Agendados: ", currentHour, currentMinute);
+      for (int i = 0; i < wateringTimesCount; i++)
       {
-        Serial.printf("💧 Solo precisa de água (%d%% < %d%%) - iniciando irrigação\n",
-                      soilMoisture, idealSoilMoisture);
-        startIrrigation();
-        dailyIrrigationDone = true;
-        lastTriggeredDay = currentDay;
+        Serial.printf("%02d:%02d%s", wateringTimes[i].hour, wateringTimes[i].minute,
+                      wateringTimes[i].executed ? "(✓)" : "");
+        if (i < wateringTimesCount - 1)
+          Serial.print(", ");
       }
-      else
-      {
-        Serial.printf("💧 Solo já está adequado (%d%% >= %d%%) - irrigação não necessária\n",
-                      soilMoisture, idealSoilMoisture);
-        dailyIrrigationDone = true;
-        lastTriggeredDay = currentDay;
-      }
+      Serial.println();
+      lastScheduledLog = millis();
     }
   }
 }
@@ -272,37 +340,31 @@ void handleIrrigationTimer()
     soilMoisture = readSoilMoisture();
     lastMoistureCheck = nowMs;
 
-    // Atualizar status do solo
-    String statusSolo = soilMoisture < max(30, idealSoilMoisture) ? "Solo SECO" : "Solo OK";
+    Serial.printf("⏱️ Irrigando... Umidade: %d%% | Tempo: %lus\n", soilMoisture, elapsed / 1000);
 
-    Serial.printf("⏱️ Irrigando... %s | Umidade: %d%% | Tempo: %lus\n", statusSolo.c_str(), soilMoisture, elapsed / 1000);
+    // ✅ Atualizar apenas linha 2 (umidade)
+    lcd.setCursor(0, 1);
+    lcd.print("Umidade: " + String(soilMoisture) + "%   ");
+    lastDisplayedMoisture = soilMoisture;
 
-    // Atualizar LCD só se mudou
-    if (statusSolo != lastStatusSolo || soilMoisture != lastSoilMoisture)
-    {
-      lcd.setCursor(0, 0);
-      lcd.print(statusSolo + "       "); // limpar sobra
-      lcd.setCursor(0, 1);
-      lcd.print("Umidade: " + String(soilMoisture) + "%   ");
-
-      lastStatusSolo = statusSolo;
-      lastSoilMoisture = soilMoisture;
-    }
-
+    // Verificar se atingiu meta
     if (soilMoisture >= idealSoilMoisture + BUFFER_SEGURANCA)
     {
       stopIrrigation("Meta atingida");
+      lastDisplayedMode = ""; // Forçar atualização para próximo horário
       return;
     }
   }
 
+  // Verificar tempo máximo
   if (elapsed >= IRRIGATION_MAX_DURATION)
   {
     stopIrrigation("Tempo maximo");
+    lastDisplayedMode = ""; // Forçar atualização para próximo horário
   }
 }
 
-void setIrrigationConfig(String mode, int hour, int minute, String freq, int targetMoisture)
+void setIrrigationConfig(String mode, JsonArray times, String freq, int targetMoisture)
 {
   if (WiFi.status() == WL_CONNECTED && !isTimeSynchronized())
   {
@@ -310,12 +372,28 @@ void setIrrigationConfig(String mode, int hour, int minute, String freq, int tar
   }
 
   irrigationMode = mode;
-  wateringHour = hour;
-  wateringMinute = minute;
   wateringFrequency = freq;
   idealSoilMoisture = targetMoisture;
 
-  // ✅ ADICIONAR: Parar irrigação ativa ao trocar para SCHEDULED
+  // ✅ Processar array de horários
+  wateringTimesCount = 0;
+  for (JsonVariant timeValue : times)
+  {
+    if (wateringTimesCount >= 2)
+      break; // Máximo 2 horários
+
+    String timeStr = timeValue.as<String>();
+    int sepIndex = timeStr.indexOf(':');
+    if (sepIndex > 0)
+    {
+      wateringTimes[wateringTimesCount].hour = timeStr.substring(0, sepIndex).toInt();
+      wateringTimes[wateringTimesCount].minute = timeStr.substring(sepIndex + 1).toInt();
+      wateringTimes[wateringTimesCount].executed = false;
+      wateringTimesCount++;
+    }
+  }
+
+  // ✅ Parar irrigação ativa ao trocar para SCHEDULED
   if (mode == "SCHEDULED" && isIrrigating)
   {
     stopIrrigation("Modo alterado para SCHEDULED");
@@ -325,9 +403,18 @@ void setIrrigationConfig(String mode, int hour, int minute, String freq, int tar
   // Resetar flags
   dailyIrrigationDone = false;
   lastTriggeredDay = -1;
+  lastIrrigationEndTime = 0;
 
-  Serial.printf("⚙️ Nova config: %s %02d:%02d %d%%\n",
-                mode.c_str(), hour, minute, targetMoisture);
+  lastDisplayedMode = "";
+
+  Serial.printf("⚙️ Nova config: %s | %d horário(s) | Alvo: %d%%\n",
+                mode.c_str(), wateringTimesCount, targetMoisture);
+
+  for (int i = 0; i < wateringTimesCount; i++)
+  {
+    Serial.printf("   Horário %d: %02d:%02d\n", i + 1,
+                  wateringTimes[i].hour, wateringTimes[i].minute);
+  }
 }
 
 // ✅ Função reset
@@ -335,8 +422,7 @@ void resetIrrigationConfig()
 {
   irrigationMode = "AUTO";
   idealSoilMoisture = 40; // padrão razoável
-  wateringHour = 0;
-  wateringMinute = 0;
+  wateringTimesCount = 0;
   wateringFrequency = "once_a_day";
   isIrrigating = false;
   pumpStatus = false;
