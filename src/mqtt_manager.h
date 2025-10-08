@@ -260,7 +260,7 @@ void publishRegistrationMessage()
     String registrationPayload;
     serializeJson(doc, registrationPayload);
 
-    mqttClient.publish(topic_register, registrationPayload.c_str());
+    mqttClient.publish(topic_register, registrationPayload.c_str(), true);
     Serial.println("📤 Mensagem de registro com dados completos publicada.");
   }
 }

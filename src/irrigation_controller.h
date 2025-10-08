@@ -13,6 +13,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 // Pinos
 const int PINO_SENSOR = A0;
 const int PINO_RELE = D1;
+const int PINO_BOIA = D5; // ✅ NOVO: Sensor de boia
 
 // Calibração sensor
 const int VALOR_SECO = 1024;
@@ -57,6 +58,22 @@ const unsigned long MIN_INTERVAL_BETWEEN_IRRIGATIONS = 300000; // 5 minutos em m
 String lastDisplayedMode = "";
 int lastDisplayedMoisture = -1;
 
+bool waterLevelOk = false; // Flag para nível de água
+
+// ✅ Controle do botão e display MAC
+const int BUTTON_PIN = D7;
+bool mostrarMAC = false; // false = irrigação, true = MAC
+int prev_button_state = HIGH;
+String macAddress = "";
+String mensagemLetreiro = "";
+int posLetreiro = 0;
+unsigned long lastScroll = 0;
+const unsigned long scrollInterval = 600; // ms entre cada movimento
+
+// ✅ Controle de atualização do display
+unsigned long lastDisplayRefresh = 0;
+const unsigned long displayRefreshInterval = 500;
+
 // ================= FUNÇÕES =================
 struct tm getCurrentTime()
 {
@@ -96,8 +113,28 @@ void checkDayChange()
   lastTriggeredDay = currentDay;
 }
 
+bool checkWaterLevel()
+{
+  int leituraBoia = digitalRead(PINO_BOIA);
+  waterLevelOk = (leituraBoia == LOW); // LOW = nível OK
+  return waterLevelOk;
+}
+
 void controlPump(bool ligar, String motivo)
 {
+  // ✅ SEGURANÇA: Só liga bomba se houver água
+  if (ligar && !waterLevelOk)
+  {
+    Serial.println("🚨 ERRO: Nível de água BAIXO! Bomba bloqueada por segurança.");
+    digitalWrite(PINO_RELE, HIGH); // Força desligado
+    pumpStatus = false;
+
+    // Atualizar LCD com alerta
+    lcd.setCursor(0, 0);
+    lcd.print("NIVEL BAIXO!    ");
+    return;
+  }
+
   digitalWrite(PINO_RELE, ligar ? LOW : HIGH);
   pumpStatus = ligar;
   Serial.printf("💧 Bomba %s | %s\n", ligar ? "LIGADA" : "DESLIGADA", motivo.c_str());
@@ -123,6 +160,127 @@ unsigned long getFrequencyMillis(String freq)
   return 24UL * 3600000UL; // padrão: 1x/dia
 }
 
+void atualizarDisplayMAC()
+{
+  // Linha 0 fixa
+  lcd.setCursor(0, 0);
+  lcd.print("ENDERECO MAC:   ");
+
+  // Linha 1: letreiro rolando
+  if (millis() - lastScroll >= scrollInterval)
+  {
+    lastScroll = millis();
+    lcd.setCursor(0, 1);
+
+    String displayText = mensagemLetreiro.substring(posLetreiro);
+    if (displayText.length() < 16)
+    {
+      displayText += mensagemLetreiro.substring(0, 16 - displayText.length());
+    }
+
+    lcd.print(displayText);
+
+    posLetreiro++;
+    if (posLetreiro >= mensagemLetreiro.length())
+      posLetreiro = 0;
+  }
+}
+
+void handleButton()
+{
+  int button_state = digitalRead(BUTTON_PIN);
+
+  // Detecta transição de HIGH para LOW (botão pressionado)
+  if (prev_button_state == HIGH && button_state == LOW)
+  {
+    delay(50);                          // Debounce
+    if (digitalRead(BUTTON_PIN) == LOW) // Confirma pressionamento
+    {
+      mostrarMAC = !mostrarMAC;
+
+      // ✅ LIMPA O DISPLAY COMPLETAMENTE
+      lcd.clear();
+      posLetreiro = 0;
+
+      Serial.println("\n========================================");
+      Serial.println(mostrarMAC ? "🔄 MODO: MAC ADDRESS" : "🔄 MODO: IRRIGAÇÃO");
+      Serial.println("========================================");
+
+      // ✅ FORÇA ATUALIZAÇÃO COMPLETA ao voltar para modo irrigação
+      if (!mostrarMAC)
+      {
+        lastDisplayedMode = ""; // Força reescrever linha 0
+
+        // ✅ CORREÇÃO: Lê umidade atual e já define como "exibida"
+        soilMoisture = readSoilMoisture();
+        lastDisplayedMoisture = soilMoisture; // ← IMPORTANTE: define como já exibida
+
+        // Atualiza linha 0 (modo/status)
+        lcd.setCursor(0, 0);
+        if (!waterLevelOk)
+        {
+          lcd.print("NIVEL BAIXO!    ");
+          Serial.println("⚠️ Display: NIVEL BAIXO!");
+        }
+        else if (irrigationMode == "SCHEDULED" && wateringTimesCount > 0)
+        {
+          // Encontrar o próximo horário não executado
+          int nextScheduleIndex = -1;
+          for (int i = 0; i < wateringTimesCount; i++)
+          {
+            if (!wateringTimes[i].executed)
+            {
+              nextScheduleIndex = i;
+              break;
+            }
+          }
+
+          if (nextScheduleIndex >= 0)
+          {
+            char timeBuffer[20];
+            sprintf(timeBuffer, "AGENDADO %02d:%02d",
+                    wateringTimes[nextScheduleIndex].hour,
+                    wateringTimes[nextScheduleIndex].minute);
+            lcd.print(String(timeBuffer) + "   ");
+            Serial.println("📅 Display: " + String(timeBuffer));
+          }
+          else
+          {
+            char timeBuffer[20];
+            sprintf(timeBuffer, "AGENDADO %02d:%02d",
+                    wateringTimes[0].hour,
+                    wateringTimes[0].minute);
+            lcd.print(String(timeBuffer) + "   ");
+            Serial.println("📅 Display: " + String(timeBuffer));
+          }
+        }
+        else
+        {
+          lcd.print(irrigationMode + " Mode      ");
+          Serial.println("⚙️ Display: " + irrigationMode + " Mode");
+        }
+
+        // Atualiza linha 1 (umidade)
+        lcd.setCursor(0, 1);
+        char moistureBuffer[20];
+        sprintf(moistureBuffer, "Umidade: %d%%  ", soilMoisture);
+        lcd.print(moistureBuffer);
+        Serial.println("💧 Display: " + String(moistureBuffer));
+
+        Serial.println("✅ Display atualizado completamente");
+        Serial.println("========================================\n");
+      }
+      else
+      {
+        Serial.println("📟 Exibindo MAC Address no display");
+        Serial.println("========================================\n");
+      }
+    }
+  }
+
+  prev_button_state = button_state;
+}
+
 void initIrrigation()
 {
   Wire.begin(D2, D3);
@@ -130,15 +288,26 @@ void initIrrigation()
   lcd.backlight();
 
   pinMode(PINO_RELE, OUTPUT);
-  digitalWrite(PINO_RELE, HIGH); // desligado
+  digitalWrite(PINO_RELE, HIGH);
+
+  pinMode(PINO_BOIA, INPUT_PULLUP);
+
+  // ✅ Configurar botão
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  // ✅ Obter MAC Address
+  macAddress = WiFi.macAddress();
+  mensagemLetreiro = macAddress + "   "; // Espaços extras para efeito visual
 
   if (idealSoilMoisture == 0)
   {
-    idealSoilMoisture = 40; // Valor padrão seguro
+    idealSoilMoisture = 40;
     Serial.printf("⚙️ Umidade ideal inicializada para: %d%%\n", idealSoilMoisture);
   }
 
   Serial.println("🌱 Sistema de irrigação iniciado.");
+  Serial.println("📟 MAC Address: " + macAddress);
+
   lcd.setCursor(0, 0);
   lcd.print("Sistema pronto");
 }
@@ -148,6 +317,15 @@ void startIrrigation()
   if (isIrrigating)
   {
     Serial.println("⚠️ Tentativa de iniciar irrigação já em andamento");
+    return;
+  }
+
+  // ✅ Verificar nível antes de iniciar
+  if (!checkWaterLevel())
+  {
+    Serial.println("🚨 Impossível iniciar irrigação - nível de água baixo!");
+    lcd.setCursor(0, 0);
+    lcd.print("NIVEL BAIXO!    ");
     return;
   }
 
@@ -167,73 +345,118 @@ void stopIrrigation(String motivo)
 
 void handleIrrigation()
 {
+  checkWaterLevel();
   soilMoisture = readSoilMoisture();
 
-  // --- Atualização do Display ---
-  static unsigned long lastLogTime = 0;
-
-  if (irrigationMode != lastDisplayedMode)
+  // ✅ Se estiver mostrando MAC, não atualizar display de irrigação
+  if (mostrarMAC)
   {
-    lcd.setCursor(0, 0);
-    if (irrigationMode == "SCHEDULED" && wateringTimesCount > 0)
+    atualizarDisplayMAC();
+
+    // Logs reduzidos quando em modo MAC (a cada 10 segundos)
+    static unsigned long lastLogTimeMAC = 0;
+    if (millis() - lastLogTimeMAC >= 10000)
     {
-      // ✅ ENCONTRAR O PRÓXIMO HORÁRIO NÃO EXECUTADO
-      int nextScheduleIndex = -1;
-      for (int i = 0; i < wateringTimesCount; i++)
+      Serial.printf("📟 Modo MAC | Umidade: %d%% | Nivel: %s | Bomba: %s\n",
+                    soilMoisture,
+                    waterLevelOk ? "OK" : "BAIXO",
+                    pumpStatus ? "ON" : "OFF");
+      lastLogTimeMAC = millis();
+    }
+  }
+  else
+  {
+    // --- Modo IRRIGAÇÃO: Atualização do Display com Controle de Frequência ---
+
+    // ✅ SÓ ATUALIZA DISPLAY A CADA 500ms (evita flickering)
+    if (millis() - lastDisplayRefresh >= displayRefreshInterval)
+    {
+      lastDisplayRefresh = millis();
+
+      // Atualizar linha 0 apenas se mudou o modo ou nível
+      if (irrigationMode != lastDisplayedMode || !waterLevelOk)
       {
-        if (!wateringTimes[i].executed)
+        lcd.setCursor(0, 0);
+
+        if (!waterLevelOk)
         {
-          nextScheduleIndex = i;
-          break;
+          lcd.print("NIVEL BAIXO!    ");
         }
+        else if (irrigationMode == "SCHEDULED" && wateringTimesCount > 0)
+        {
+          // Encontrar o próximo horário não executado
+          int nextScheduleIndex = -1;
+          for (int i = 0; i < wateringTimesCount; i++)
+          {
+            if (!wateringTimes[i].executed)
+            {
+              nextScheduleIndex = i;
+              break;
+            }
+          }
+
+          // Se encontrou horário pendente, mostrar ele
+          if (nextScheduleIndex >= 0)
+          {
+            lcd.print("AGENDADO " + String(wateringTimes[nextScheduleIndex].hour) + ":" +
+                      (wateringTimes[nextScheduleIndex].minute < 10 ? "0" : "") +
+                      String(wateringTimes[nextScheduleIndex].minute) + "   ");
+          }
+          else
+          {
+            // Todos executados, mostrar o primeiro
+            lcd.print("AGENDADO " + String(wateringTimes[0].hour) + ":" +
+                      (wateringTimes[0].minute < 10 ? "0" : "") +
+                      String(wateringTimes[0].minute) + "   ");
+          }
+        }
+        else
+        {
+          lcd.print(irrigationMode + " Mode      ");
+        }
+        lastDisplayedMode = waterLevelOk ? irrigationMode : "NIVEL_BAIXO";
       }
 
-      // Se encontrou horário pendente, mostrar ele
-      if (nextScheduleIndex >= 0)
+      // Atualizar linha 1 apenas se umidade mudou
+      if (soilMoisture != lastDisplayedMoisture)
       {
-        lcd.print("AGENDADO " + String(wateringTimes[nextScheduleIndex].hour) + ":" +
-                  (wateringTimes[nextScheduleIndex].minute < 10 ? "0" : "") +
-                  String(wateringTimes[nextScheduleIndex].minute) + "   ");
-      }
-      else
-      {
-        // Todos executados, mostrar o primeiro
-        lcd.print("AGENDADO " + String(wateringTimes[0].hour) + ":" +
-                  (wateringTimes[0].minute < 10 ? "0" : "") +
-                  String(wateringTimes[0].minute) + "   ");
+        lcd.setCursor(0, 1);
+        lcd.print("Umidade: " + String(soilMoisture) + "%  ");
+        lastDisplayedMoisture = soilMoisture;
       }
     }
-    else
+
+    // Logs periódicos (a cada 5 segundos)
+    static unsigned long lastLogTime = 0;
+    if (millis() - lastLogTime >= 5000)
     {
-      lcd.print(irrigationMode + " Mode      ");
+      if (irrigationMode == "AUTO")
+      {
+        String statusSolo = soilMoisture < idealSoilMoisture ? "Solo SECO" : "Solo OK";
+        Serial.printf("🌱 [AUTO] %s | Umidade: %d%% | Alvo: %d%% | Nivel: %s | Bomba: %s\n",
+                      statusSolo.c_str(), soilMoisture, idealSoilMoisture,
+                      waterLevelOk ? "OK" : "BAIXO",
+                      pumpStatus ? "LIGADA" : "DESLIGADA");
+      }
+      lastLogTime = millis();
     }
-    lastDisplayedMode = irrigationMode;
   }
 
-  if (soilMoisture != lastDisplayedMoisture)
+  // ✅ Verificações de segurança (independente do modo de display)
+  if (!waterLevelOk && isIrrigating)
   {
-    lcd.setCursor(0, 1);
-    lcd.print("Umidade: " + String(soilMoisture) + "%  ");
-    lastDisplayedMoisture = soilMoisture;
-  }
-
-  // Logs periódicos (a cada 5 segundos)
-  if (millis() - lastLogTime >= 5000)
-  {
-    if (irrigationMode == "AUTO")
-    {
-      String statusSolo = soilMoisture < idealSoilMoisture ? "Solo SECO" : "Solo OK";
-      Serial.printf("🌱 [AUTO] %s | Umidade: %d%% | Alvo: %d%% | Bomba: %s\n",
-                    statusSolo.c_str(), soilMoisture, idealSoilMoisture,
-                    pumpStatus ? "LIGADA" : "DESLIGADA");
-    }
-    lastLogTime = millis();
+    stopIrrigation("Nivel baixo detectado");
+    Serial.println("🚨 Irrigação interrompida - nível de água baixo!");
+    return;
   }
 
   if (isIrrigating)
     return;
 
-  // --- Lógica de Disparo ---
+  if (!waterLevelOk)
+    return;
+
+  // --- Lógica de Disparo (funciona independente do display) ---
   if (irrigationMode == "AUTO")
   {
     if (soilMoisture < idealSoilMoisture)
@@ -258,11 +481,11 @@ void handleIrrigation()
     int currentMinute = timeinfo.tm_min;
     int currentDay = timeinfo.tm_mday;
 
+    // Verificar todos os horários configurados
     for (int i = 0; i < wateringTimesCount; i++)
     {
       WateringTime &wt = wateringTimes[i];
 
-      // Se já executou este horário hoje, pular
       if (wt.executed)
         continue;
 
@@ -280,7 +503,7 @@ void handleIrrigation()
                         i + 1, wt.hour, wt.minute, timeSinceLastIrrigation / 1000);
           Serial.println("   Pulando este horário por segurança");
           wt.executed = true;
-          lastDisplayedMode = ""; // Forçar atualização do display
+          lastDisplayedMode = "";
           continue;
         }
 
@@ -308,7 +531,7 @@ void handleIrrigation()
       }
     }
 
-    // ✅ LOG PERIÓDICO (a cada 30 segundos)
+    // LOG PERIÓDICO (a cada 30 segundos)
     static unsigned long lastScheduledLog = 0;
     if (millis() - lastScheduledLog >= 30000)
     {
@@ -332,6 +555,15 @@ void handleIrrigationTimer()
   if (!isIrrigating)
     return;
 
+  checkWaterLevel();
+
+  if (!waterLevelOk)
+  {
+    stopIrrigation("Nivel baixo");
+    lastDisplayedMode = "";
+    return;
+  }
+
   unsigned long nowMs = millis();
   unsigned long elapsed = nowMs - irrigationStart;
 
@@ -340,7 +572,8 @@ void handleIrrigationTimer()
     soilMoisture = readSoilMoisture();
     lastMoistureCheck = nowMs;
 
-    Serial.printf("⏱️ Irrigando... Umidade: %d%% | Tempo: %lus\n", soilMoisture, elapsed / 1000);
+    Serial.printf("⏱️ Irrigando... Umidade: %d%% | Tempo: %lus | Nivel: OK\n",
+                  soilMoisture, elapsed / 1000);
 
     // ✅ Atualizar apenas linha 2 (umidade)
     lcd.setCursor(0, 1);

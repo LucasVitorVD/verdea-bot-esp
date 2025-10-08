@@ -17,6 +17,14 @@
 // Instâncias globais
 ESP8266WebServer server(80);
 
+// ✅ Controle de tempo não-bloqueante
+unsigned long lastTimeSync = 0;
+unsigned long lastTimeDebug = 0;
+unsigned long lastStatusLog = 0;
+const unsigned long timeSyncInterval = 3600000;    // 1 hora
+const unsigned long timeDebugInterval = 30000;     // 30 segundos
+const unsigned long statusLogInterval = 60000;     // 1 minuto
+
 void setup()
 {
   Serial.begin(921600);
@@ -53,6 +61,9 @@ void setup()
 
 void loop()
 {
+  // processar botão de troca de modo
+  handleButton();
+
   // Processar requisições web
   server.handleClient();
 
@@ -94,5 +105,5 @@ void loop()
     lastTimeDebug = millis();
   }
 
-  delay(1000);
+  delay(10);
 }
