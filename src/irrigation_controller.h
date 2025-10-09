@@ -75,6 +75,8 @@ unsigned long lastDisplayRefresh = 0;
 const unsigned long displayRefreshInterval = 500;
 
 // ================= FUNÇÕES =================
+void publishIrrigationHistory(double soilMoisture, String mode, int durationSeconds);
+
 struct tm getCurrentTime()
 {
   time_t nowTime = time(nullptr);
@@ -337,10 +339,19 @@ void startIrrigation()
 
 void stopIrrigation(String motivo)
 {
+  unsigned long irrigationDuration = (millis() - irrigationStart) / 1000;
+
   isIrrigating = false;
   lastWateringMillis = millis();
   lastIrrigationEndTime = millis(); // ✅ Registrar quando terminou
   controlPump(false, motivo);
+
+  bool isSuccessful = (motivo == "Meta atingida");
+  // Publicar histórico de irrigação
+  if (isSuccessful && irrigationDuration >= 5)
+  {
+    publishIrrigationHistory(soilMoisture, irrigationMode, irrigationDuration);
+  }
 }
 
 void handleIrrigation()

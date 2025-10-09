@@ -12,6 +12,7 @@
 // Tópicos base
 const char *topic_commands = "verdea/commands";
 const char *topic_register = "verdea/device/register";
+const char *topic_irrigation_history = "verdea/irrigation/history";
 
 // Instâncias globais para o cliente MQTT
 WiFiClientSecure espClient;
@@ -301,6 +302,47 @@ void publishStatus(String status)
   else
   {
     Serial.println("⚠️ MQTT não conectado - não foi possível publicar status");
+  }
+}
+
+void publishIrrigationHistory(double soilMoisture, String mode, int durationSeconds)
+{
+  if (!mqttClient.connected())
+  {
+    Serial.println("⚠️ MQTT não conectado - histórico não enviado");
+    return;
+  }
+
+  String mac = WiFi.macAddress();
+
+  // Cria o payload JSON
+  DynamicJsonDocument doc(256);
+  doc["soilMoisture"] = soilMoisture;
+  doc["mode"] = mode;
+  doc["durationSeconds"] = durationSeconds;
+  doc["deviceMacAddress"] = mac;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  // Publica no tópico de histórico
+  bool result = mqttClient.publish(topic_irrigation_history, payload.c_str());
+
+  if (result)
+  {
+    Serial.println("📊 ========================================");
+    Serial.println("📊 HISTÓRICO DE IRRIGAÇÃO ENVIADO");
+    Serial.println("📊 ========================================");
+    Serial.println("📊 Tópico: " + String(topic_irrigation_history));
+    Serial.println("📊 Payload: " + payload);
+    Serial.println("📊 Duração: " + String(durationSeconds) + "s");
+    Serial.println("📊 Umidade Final: " + String(soilMoisture) + "%");
+    Serial.println("📊 Modo: " + mode);
+    Serial.println("📊 ========================================");
+  }
+  else
+  {
+    Serial.println("❌ Falha ao publicar histórico de irrigação");
   }
 }
 
