@@ -18,7 +18,7 @@ bool isReconnecting = false;
 String userEmail = "";
 
 // Constantes
-const char* api_endpoint = "http://192.168.15.115:8080/api/device/send-mac";
+const char* api_endpoint = "http://172.31.179.197:8080/api/device/send-mac";
 
 // Parâmetro personalizado para o e-mail
 WiFiManagerParameter customEmail("userEmail", "E-mail cadastrado na plataforma Verdea", "", 50, "required");
