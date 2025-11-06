@@ -18,6 +18,9 @@ const char *topic_irrigation_history = "verdea/irrigation/history";
 WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
 
+// Acessa a variável global de e-mail do wifi_manager
+extern String userEmail;
+
 // Declarações das funções
 void initMQTT();
 void handleMQTT();
@@ -85,6 +88,18 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 
     if (!error)
     {
+      if (doc.containsKey("action"))
+      {
+        String action = doc["action"].as<String>();
+        if (action == "RESET_WIFI" || action == "REQUIRE_EMAIL")
+        {
+          Serial.println("🚨 Comando recebido: Reiniciar WiFi (email inválido ou ausente)");
+          delay(1000);
+          resetWiFiSettings();
+          ESP.restart();
+          return; // evita continuar processando
+        }
+      }
       // Checa se é comando de DELETE_PLANT
       if (doc.containsKey("command") && String(doc["command"]) == "DELETE_PLANT")
       {
@@ -257,6 +272,10 @@ void publishRegistrationMessage()
     doc["name"] = deviceName;
     doc["macAddress"] = mac;
     doc["currentIp"] = ip;
+    if (userEmail.length() > 0)
+    {
+      doc["email"] = userEmail;
+    }
 
     String registrationPayload;
     serializeJson(doc, registrationPayload);

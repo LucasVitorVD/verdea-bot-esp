@@ -3,8 +3,6 @@
 
 #include <ESP8266WiFi.h>
 #include <WiFiManager.h>
-#include <ESP8266HTTPClient.h>
-#include <WiFiClient.h>
 #include <ArduinoJson.h>
 #include "config.h"
 
@@ -17,9 +15,6 @@ bool isOnlineMode = false;
 bool isReconnecting = false;
 String userEmail = "";
 
-// Constantes
-const char* api_endpoint = "http://172.31.179.197:8080/api/device/send-mac";
-
 // Parâmetro personalizado para o e-mail
 WiFiManagerParameter customEmail("userEmail", "E-mail cadastrado na plataforma Verdea", "", 50, "required");
 
@@ -31,7 +26,6 @@ bool getOfflineMode();
 bool getOnlineMode();
 void resetWiFiSettings();
 String getDeviceMacClean();
-bool sendDeviceToBackend();
 
 // ================= IMPLEMENTAÇÕES DAS FUNÇÕES =================
 
@@ -39,44 +33,6 @@ String getDeviceMacClean() {
   String mac = WiFi.macAddress();
   mac.replace(":", "");
   return mac;
-}
-
-bool sendDeviceToBackend() {
-  if (userEmail.length() == 0) {
-    Serial.println("⚠️ Nenhum e-mail fornecido.");
-    return false;
-  }
-
-  WiFiClient client;
-  HTTPClient http;
-
-  http.begin(client, api_endpoint);
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(10000); // 10 segundos timeout
-
-  DynamicJsonDocument doc(256);
-  doc["email"] = userEmail;
-  doc["deviceName"] = "irrigacao-verdea-" + getDeviceMacClean();
-  doc["macAddress"] = WiFi.macAddress();
-
-  String jsonPayload;
-  serializeJson(doc, jsonPayload);
-
-  Serial.println("📤 Enviando payload: " + jsonPayload);
-
-  int httpResponseCode = http.POST(jsonPayload);
-  String response = http.getString();
-  
-  http.end();
-
-  if (httpResponseCode == 200) {
-    Serial.println("✅ Resposta da API (" + String(httpResponseCode) + "): " + response);
-    return true;
-  } else {
-    Serial.println("❌ Erro na requisição HTTP: " + String(httpResponseCode));
-    Serial.println("Resposta: " + response);
-    return false;
-  }
 }
 
 void initWiFi() {
@@ -91,10 +47,9 @@ void initWiFi() {
   String customHtml = "<div style='margin: 20px 0; padding: 15px; background-color: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>";
   customHtml += "<h3 style='margin-top: 0; color: #1976d2; font-family: Arial, sans-serif;'>📧 Instruções Importantes:</h3>";
   customHtml += "<p style='margin: 10px 0; font-size: 14px;'><strong>1.</strong> Insira o e-mail <strong>cadastrado na plataforma Verdea</strong></p>";
-  customHtml += "<p style='margin: 10px 0; font-size: 14px;'><strong>2.</strong> Após conectar, <strong>verifique se recebeu confirmação no e-mail</strong></p>";
-  customHtml += "<p style='margin: 10px 0; font-size: 14px;'><strong>3.</strong> Se não receber confirmação, reconecte-se à rede <strong style='color: #d32f2f;'>" + String(WIFI_AP_NAME) + "</strong> e reconfigure</p>";
+  customHtml += "<p style='margin: 10px 0; font-size: 14px;'><strong>2.</strong> Após conectar, o dispositivo irá se registrar e você poderá associá-lo à sua planta na plataforma.</p>";
   customHtml += "<p style='margin: 15px 0 0 0; padding: 10px; background-color: #fff3e0; border-radius: 4px; font-size: 13px; color: #ef6c00;'>";
-  customHtml += "⚠️ <strong>Importante:</strong> Se o e-mail não for encontrado na plataforma, as configurações serão resetadas automaticamente.</p>";
+  customHtml += "⚠️ <strong>Importante:</strong> Se o e-mail for inválido, o dispositivo poderá ser resetado remotamente pelo sistema.</p>";
   customHtml += "</div>";
 
   // Callback para quando entra em modo AP
@@ -128,32 +83,13 @@ void initWiFi() {
     Serial.println("📶 Rede: " + WiFi.SSID());
     Serial.println("📍 IP: " + WiFi.localIP().toString());
     
+    // Recupera o e-mail salvo, caso seja uma conexão automática
     userEmail = customEmail.getValue();
     
-    if (userEmail.length() > 0) {
-      Serial.println("📤 Enviando dados para o backend...");
-      
-      if (sendDeviceToBackend()) {
-        Serial.println("✅ Dispositivo vinculado com sucesso!");
-        isOnlineMode = true;
-        offlineMode = false;
-        
-        Serial.println("✅ Configuração concluída! Reiniciando em 3 segundos...");
-        delay(3000);
-        ESP.restart();
-      } else {
-        Serial.println("❌ Falha na vinculação com backend.");
-        Serial.println("🔄 Resetando configurações para nova tentativa...");
-        resetWiFiSettings();
-        delay(3000);
-        ESP.restart();
-      }
-    } else {
-      // Se conectou mas não tem e-mail (conexão automática), funciona normalmente
-      Serial.println("ℹ️ Conectado automaticamente - funcionando normalmente");
-      isOnlineMode = true;
-      offlineMode = false;
-    }
+    isOnlineMode = true;
+    offlineMode = false;
+    Serial.println("ℹ️ Conexão bem-sucedida. O sistema continuará a inicialização.");
+
   } else {
     Serial.println("❌ Timeout na configuração WiFi");
     Serial.println("🚨 ATIVANDO MODO OFFLINE");
